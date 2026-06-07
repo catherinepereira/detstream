@@ -1,0 +1,16 @@
+feeds:
+  - id: monterey-otters
+    name: Monterey Sea Otters
+    source:
+      type: youtube
+      url: "https://www.youtube.com/watch?v=abbR-Ttd-cA"
+    detector:
+      type: yolo-world
+      prompt: otter swimming
+      confidence_threshold: 0.4
+    debounce:
+      sample_interval_s: 2.0
+      enter_frames: 3
+      exit_frames: 5
+      cooldown_s: 120
+    sinks: [console]

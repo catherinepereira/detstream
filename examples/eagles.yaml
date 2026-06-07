@@ -1,0 +1,23 @@
+feeds:
+  - id: big-bear-eagles
+    name: Big Bear Eagles
+    source:
+      type: youtube
+      url: "https://www.youtube.com/watch?v=B4-L2nfGcuE"
+    detector:
+      type: yolo-world
+      prompt: eagle
+      confidence_threshold: 0.4
+    debounce:
+      sample_interval_s: 2.0
+      enter_frames: 3
+      exit_frames: 5
+      cooldown_s: 120
+    sinks: [console, supabase]
+
+sinks:
+  supabase:
+    bucket: thumbnails
+    detector_label: yolo-world
+    retention_hours: 3
+    thumbnail_width: 960
