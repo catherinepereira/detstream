@@ -28,8 +28,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/catherinepereira/detstream"
 Repository = "https://github.com/catherinepereira/detstream"
+"Bug Tracker" = "https://github.com/catherinepereira/detstream/issues"
 
 [project.optional-dependencies]
 # The built-in YOLO-World detector. Kept optional so a deployment using only a
