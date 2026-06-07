@@ -1,5 +1,4 @@
 from __future__ import annotations
-import asyncio
 from collections.abc import AsyncIterator
 import cv2
 import numpy as np
