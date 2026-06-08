@@ -24,3 +24,7 @@ try:
     from . import yolo_world  # noqa: F401
 except ImportError:
     pass
+
+# roboflow imports inference_sdk lazily (inside the detector), so the module itself is
+# safe to import without the roboflow extra installed
+from . import roboflow  # noqa: F401

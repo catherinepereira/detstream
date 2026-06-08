@@ -45,6 +45,8 @@ yolo = [
 # PATH. yt-dlp must be recent enough to know the remote_components option
 youtube = ["yt-dlp>=2026.03.17", "deno>=2.8.0"]
 supabase = ["supabase>=2.4.0"]
+# The roboflow detector runs a Roboflow Workflow through the hosted inference API
+roboflow = ["inference-sdk>=1.3.0"]
 dev = ["pytest>=8.0.0"]
 
 [project.scripts]
