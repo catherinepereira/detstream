@@ -11,9 +11,12 @@ class Sink(Protocol):
 
 sinks: Registry[Sink] = Registry("detstream.sinks")
 
-# console has no optional deps. The others self-register but their factories import their
-# client libraries lazily, so a deployment only pays for the sinks it enables
+# console, dataset, and comment have no optional deps (comment posts with httpx, a core
+# dep). The others self-register but their factories import their client libraries lazily,
+# so a deployment only pays for the sinks it enables
 from . import console  # noqa: E402,F401
+from . import dataset  # noqa: E402,F401
+from . import comment  # noqa: E402,F401
 
 try:
     from . import supabase  # noqa: F401

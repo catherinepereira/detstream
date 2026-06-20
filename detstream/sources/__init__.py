@@ -15,10 +15,17 @@ class Source(Protocol):
     def frames(self) -> AsyncIterator[tuple[float, np.ndarray]]: ...
 
 
-# How long VideoCapture reads can keep failing before the stream is treated as down,
-# rather than emitting the last decoded frame
+# How long VideoCapture reads can keep failing, or keep returning the same frozen frame,
+# before the stream is treated as down rather than emitting a stale frame
 STREAM_DOWN_AFTER_S = 15.0
 RECONNECT_BACKOFF_S = (2.0, 5.0, 15.0, 30.0, 60.0)
+
+
+# A cheap signature for spotting a frozen stream. A live feed jitters every frame from
+# sensor noise and compression, so two reads sharing a signature means the decoder is
+# handing back the same buffered frame. A coarse stride keeps this fast on 1080p frames
+def _frame_signature(frame: np.ndarray) -> int:
+    return hash(frame[::16, ::16].tobytes())
 
 
 async def capture_frames(
@@ -49,12 +56,24 @@ async def capture_frames(
 
         attempt = 0
         last_ok = time.monotonic()
+        last_change = last_ok
+        last_sig: int | None = None
         try:
             while True:
                 ok, frame = await asyncio.to_thread(cap.read)
                 now = time.monotonic()
                 if ok and frame is not None:
                     last_ok = now
+                    # A stream can fall behind the live edge or freeze while reads still
+                    # succeed, so a feed that keeps returning the same frame is treated as
+                    # down too, which reconnects and re-seeks to the live edge
+                    sig = _frame_signature(frame)
+                    if sig != last_sig:
+                        last_sig = sig
+                        last_change = now
+                    elif reconnect and now - last_change > STREAM_DOWN_AFTER_S:
+                        log.warning("%s: stream frozen; reconnecting", label)
+                        break
                     yield time.time(), frame
                     await asyncio.sleep(interval_s)
                     continue

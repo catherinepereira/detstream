@@ -7,12 +7,18 @@ import numpy as np
 class SightingStarted:
     feed_id: str
     confidence: float
+    # The class that matched, when the detector tracks more than one (yoloe). None for
+    # single-class detectors
+    label: str | None = None
 
 
 @dataclass
 class SightingEnded:
     feed_id: str
     peak_confidence: float
-    # The peak-confidence frame, annotated, captured over the sighting's life. The
-    # thumbnail is uploaded from this so it matches the stored peak confidence
+    # The raw peak-confidence frame captured over the sighting's life. A sink that wants a
+    # box draws it from peak_box, so this frame stays clean for sinks that want the pixels
     peak_frame: np.ndarray | None = None
+    peak_box: tuple[float, float, float, float] | None = None
+    # The class matched at peak confidence, mirroring SightingStarted.label
+    label: str | None = None

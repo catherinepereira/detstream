@@ -2,7 +2,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from .annotate import annotate
 from .config import AppConfig, FeedConfig
 from .detectors import Detector, detectors
 from .events import SightingStarted
@@ -48,10 +47,9 @@ async def watch_feed(feed: FeedConfig, detector: Detector, sinks: list[Sink]) ->
     )
     async for _ts, frame in source.frames():
         det = await asyncio.to_thread(detector.detect, frame)
-        # Annotate before the tracker captures the frame, so the saved thumbnail shows
-        # the detection box
-        annotated = annotate(frame, det, feed.name) if det.present else frame
-        event = tracker.update(det.present, det.confidence, annotated, loop.time())
+        # The tracker keeps the raw frame plus the box, so a sink can annotate at use time
+        # while the dataset sink gets clean pixels
+        event = tracker.update(det.present, det.confidence, frame, loop.time(), det.box, det.label)
         if event is None:
             continue
         if isinstance(event, SightingStarted):

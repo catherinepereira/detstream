@@ -3,6 +3,8 @@ import logging
 import os
 import uuid
 import cv2
+from ..annotate import annotate
+from ..detectors import Detection
 from ..events import SightingEnded, SightingStarted
 from . import sinks
 
@@ -39,6 +41,7 @@ class SupabaseSink:
                     "cam_id": event.feed_id,
                     "confidence": event.confidence,
                     "detector": self.detector_label,
+                    "label": event.label,
                 }
             )
             .execute()
@@ -49,7 +52,9 @@ class SupabaseSink:
         row_id = self._open_rows.pop(event.feed_id, None)
         if row_id is None:
             return
-        thumb_url = self._upload_thumbnail(event.feed_id, event.peak_frame)
+        thumb_url = self._upload_thumbnail(
+            event.feed_id, event.peak_frame, event.peak_confidence, event.peak_box
+        )
         self.client.table("sightings").update(
             {
                 "ended_at": "now()",
@@ -58,9 +63,12 @@ class SupabaseSink:
             }
         ).eq("id", row_id).execute()
 
-    def _upload_thumbnail(self, feed_id: str, frame) -> str | None:
+    def _upload_thumbnail(self, feed_id: str, frame, confidence, box) -> str | None:
         if frame is None:
             return None
+        # The website wants the box drawn on its thumbnail, so annotate here (the runner
+        # keeps the captured frame raw). annotate returns the frame unchanged when box is None
+        frame = annotate(frame, Detection(True, confidence, box), self.detector_label)
         frame = self._downscale(frame)
         ok, buf = cv2.imencode(
             ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, self.thumbnail_quality]

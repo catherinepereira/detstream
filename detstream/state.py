@@ -19,10 +19,18 @@ class SightingTracker:
     _under: int = 0
     _peak: float = 0.0
     _peak_frame: np.ndarray | None = None
+    _peak_box: tuple[float, float, float, float] | None = None
+    _peak_label: str | None = None
     _last_alert_at: float | None = field(default=None)
 
     def update(
-        self, detected: bool, confidence: float, frame: np.ndarray, now: float
+        self,
+        detected: bool,
+        confidence: float,
+        frame: np.ndarray,
+        now: float,
+        box: tuple[float, float, float, float] | None = None,
+        label: str | None = None,
     ) -> SightingStarted | SightingEnded | None:
         if detected:
             self._over += 1
@@ -32,15 +40,21 @@ class SightingTracker:
             self._over = 0
 
         if self.present:
-            # Keep the frame from the highest-confidence moment for the thumbnail
+            # Keep the frame, box, and label from the highest-confidence moment for the thumbnail
             if confidence > self._peak:
                 self._peak = confidence
                 self._peak_frame = frame
+                self._peak_box = box
+                self._peak_label = label
             if self._under >= self.exit_frames:
                 self.present = False
-                ended = SightingEnded(self.feed_id, self._peak, self._peak_frame)
+                ended = SightingEnded(
+                    self.feed_id, self._peak, self._peak_frame, self._peak_box, self._peak_label
+                )
                 self._peak = 0.0
                 self._peak_frame = None
+                self._peak_box = None
+                self._peak_label = None
                 return ended
             return None
 
@@ -49,7 +63,9 @@ class SightingTracker:
             self._last_alert_at = now
             self._peak = confidence
             self._peak_frame = frame
-            return SightingStarted(self.feed_id, confidence)
+            self._peak_box = box
+            self._peak_label = label
+            return SightingStarted(self.feed_id, confidence, label)
 
         return None
 

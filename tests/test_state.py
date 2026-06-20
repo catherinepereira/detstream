@@ -16,12 +16,12 @@ def make_tracker(**kwargs):
     return SightingTracker(**defaults)
 
 
-def hit(s, conf, now, frame=FRAME):
-    return s.update(True, conf, frame, now)
+def hit(s, conf, now, frame=FRAME, box=None):
+    return s.update(True, conf, frame, now, box)
 
 
-def miss(s, conf, now, frame=FRAME):
-    return s.update(False, conf, frame, now)
+def miss(s, conf, now, frame=FRAME, box=None):
+    return s.update(False, conf, frame, now, box)
 
 
 def test_fires_once_on_enter_after_n_frames():
@@ -116,3 +116,46 @@ def test_peak_frame_is_the_highest_confidence_frame():
     assert isinstance(ended, SightingEnded)
     assert ended.peak_confidence == 0.95
     assert np.array_equal(ended.peak_frame, peak)
+
+
+def test_peak_box_travels_with_peak_frame():
+    s = make_tracker(enter_frames=1, exit_frames=1)
+    hit(s, 0.5, now=0, box=(0, 0, 1, 1))
+    hit(s, 0.95, now=1, box=(10, 10, 20, 20))
+    hit(s, 0.8, now=2, box=(5, 5, 6, 6))
+    ended = miss(s, 0.1, now=3)
+    assert isinstance(ended, SightingEnded)
+    # The box from the peak-confidence frame, not the last one
+    assert ended.peak_box == (10, 10, 20, 20)
+
+
+def test_started_label_is_the_entry_class():
+    s = make_tracker(enter_frames=2, exit_frames=1)
+    assert s.update(True, 0.9, FRAME, 0, None, "deer") is None
+    started = s.update(True, 0.9, FRAME, 1, None, "deer")
+    assert isinstance(started, SightingStarted)
+    assert started.label == "deer"
+
+
+def test_ended_label_is_the_peak_class():
+    s = make_tracker(enter_frames=1, exit_frames=1)
+    # Entry class is "deer", but the peak-confidence frame is a "fox"; the ended event
+    # reports the peak's class, mirroring peak_frame/peak_box
+    s.update(True, 0.5, FRAME, 0, None, "deer")
+    s.update(True, 0.95, FRAME, 1, None, "fox")
+    s.update(True, 0.8, FRAME, 2, None, "raccoon")
+    ended = s.update(False, 0.1, FRAME, 3, None, None)
+    assert isinstance(ended, SightingEnded)
+    assert ended.label == "fox"
+
+
+def test_label_resets_between_sightings():
+    s = make_tracker(enter_frames=1, exit_frames=1, cooldown_s=0.0)
+    s.update(True, 0.9, FRAME, 0, None, "deer")
+    ended = s.update(False, 0.1, FRAME, 1, None, None)
+    assert isinstance(ended, SightingEnded)
+    # A second sighting with no label must not inherit "deer" from the first
+    s.update(True, 0.9, FRAME, 2, None, None)
+    ended2 = s.update(False, 0.1, FRAME, 3, None, None)
+    assert isinstance(ended2, SightingEnded)
+    assert ended2.label is None

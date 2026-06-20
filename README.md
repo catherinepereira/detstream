@@ -8,11 +8,12 @@ Modular object detection framework for live video feeds.
   file or webcam device)
 2. **Detector**: What to look for. `yolo-world`, an open-vocabulary model prompted with a
   word or phrase (`person`, `forklift`, `bird`); `roboflow`, a Workflow you built on Roboflow,
-  run through its hosted inference API. Bring your own by registering one (see Plugins).
+  run through its hosted inference API; `rf-detr`, RF-DETR run locally, COCO-pretrained or
+  pointed at a fine-tuned checkpoint. Bring your own by registering one (see Plugins).
 3. **Tracker**: When a detection counts as a sighting. Hysteresis and cooldown give you one
   alert per sighting instead of one per frame, which is what keeps alerts from becoming spam.
 4. **Sinks**: Where alerts go. `console`, `supabase` (rows + thumbnails for a website),
-  `discord` (rich embeds).
+  `discord` (rich embeds), `dataset` (raw peak frames to disk, for building a training set).
 
 ## Install
 
@@ -29,6 +30,7 @@ The core install pulls what every feed needs: `numpy`, `opencv-python-headless`
 | `yolo` | the `yolo-world` detector | `ultralytics>=8.3.0`, `torch>=2.2.0`. ultralytics fetches CLIP on first use of the detector |
 | `youtube` | the `youtube` source | `yt-dlp>=2026.03.17` and `deno>=2.8.0`, which ships the deno binary yt-dlp runs to solve YouTube's stream challenge |
 | `roboflow` | the `roboflow` detector | `inference-sdk>=1.3.0` |
+| `rf-detr` | the `rf-detr` detector | `rfdetr>=1.8.0`, which declares its own `torch` |
 | `supabase` | the `supabase` sink | `supabase>=2.4.0` |
 
 ## Run
@@ -53,6 +55,9 @@ sinks:
 
 Credentials and webhook URLs are configured in `.env`: `DETSTREAM_SUPABASE_URL`, `DETSTREAM_SUPABASE_KEY`, and `DETSTREAM_DISCORD_WEBHOOK_URL`.
 
+The `dataset` sink writes the raw peak frame of each sighting to `{dir}/{feed_id}/` as JPEG,
+no box drawn, for building a training set. It needs no extra: `dataset: { dir: ./frames, quality: 95 }`.
+
 The `roboflow` detector runs a Workflow you built on Roboflow through its hosted inference API.
 Install the extra (`pip install "detstream[roboflow]"`), then give it your workspace and
 workflow ID (both shown in the Workflow's deploy snippet):
@@ -72,6 +77,30 @@ The Workflow must contain an object-detection block whose output is named by `ou
 `confidence_threshold` is sent to the Workflow as its `confidence` input and used as
 detstream's sighting cutoff, so the server filters at the same level. Set other Workflow
 inputs (`iou_threshold`, `max_detections`) with an optional `parameters:` block.
+
+The `rf-detr` detector runs RF-DETR locally. Install the extra (`pip install
+"detstream[rf-detr]"`), which pulls `rfdetr` and torch. The model uses the GPU when one is
+visible and falls back to CPU.
+
+```yaml
+detector:
+  type: rf-detr
+  model: medium              # nano, small, medium (default), or large
+  weights: ./otter.pth       # local path or http(s) URL; omit for the COCO-pretrained model
+  weights_sha256: ""         # optional: pin a URL download to this digest
+  class_name: otter          # optional: only count this class, omit to accept any
+  confidence_threshold: 0.4
+```
+
+Pretrained weights are COCO, so the built-in classes are COCO's 80 (no `otter`). Point
+`weights` at a fine-tuned checkpoint to detect your own classes. A URL is downloaded once
+and cached under `~/.cache/detstream/rfdetr/`. For a fine-tuned model whose labels differ
+from COCO, list them in order with `class_names: [otter, ...]` so `class_name` resolves.
+
+A checkpoint is loaded with torch, which unpickles it, so a malicious `weights` file runs
+arbitrary code on load. Point `weights` only at files you trust. For a URL, set
+`weights_sha256` to pin the artifact: a download that does not match the digest is
+rejected before it is loaded.
 
 ## Plugins
 
@@ -110,8 +139,8 @@ detstream/
   state.py        SightingTracker: hysteresis + cooldown, no I/O
   events.py       SightingStarted / SightingEnded
   sources/        youtube, stream, file_device (+ shared reconnect base)
-  detectors/      yolo_world, roboflow
-  sinks/          console, supabase, discord
+  detectors/      yolo_world, roboflow, rf_detr
+  sinks/          console, supabase, discord, dataset
 examples/         otters.yaml, eagles.yaml
 tests/            config, registry, sources, state, sinks, detectors
 ```
