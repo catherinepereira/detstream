@@ -1,5 +1,8 @@
 # detstream
 
+<img width="600" alt="detstream-cli" src="https://github.com/user-attachments/assets/cef57c55-8b47-4764-afea-bf632b6155af" />
+
+
 Modular object detection framework for live video feeds.
 
 ## Pipeline
