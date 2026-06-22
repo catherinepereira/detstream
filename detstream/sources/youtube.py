@@ -1,8 +1,16 @@
 from __future__ import annotations
+import os
 from collections.abc import AsyncIterator
 import cv2
 import numpy as np
 from . import capture_frames, sources
+
+# FFmpeg 8 enforces a stricter HLS check (extension_picky) that rejects segments whose URL
+# has no recognized file extension. YouTube live chunks come from googlevideo.com/videoplayback
+# URLs that end in query params, not a .ts extension, so ffmpeg stalls on them and the stream
+# yields almost no frames. Allowing any segment extension restores reading these live streams.
+# Set before any VideoCapture opens, and only if the caller has not set its own options
+os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "allowed_segment_extensions;ALL")
 
 
 def resolve_stream(youtube_url: str) -> str:
