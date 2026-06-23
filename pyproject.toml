@@ -63,5 +63,4 @@ detstream = "detstream.__main__:main"
 [project.entry-points."detstream.sinks"]
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["detstream*"]
+where = ["src"]
