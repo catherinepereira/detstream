@@ -16,7 +16,8 @@ Modular object detection framework for live video feeds.
 3. **Tracker**: When a detection counts as a sighting. Hysteresis and cooldown give you one
   alert per sighting instead of one per frame, which is what keeps alerts from becoming spam.
 4. **Sinks**: Where alerts go. `console`, `supabase` (rows + thumbnails for a website),
-  `discord` (rich embeds), `dataset` (raw peak frames to disk, for building a training set).
+  `discord` (rich embeds), `dataset` (raw peak frames to disk, for building a training set),
+  `clips` (a short MP4 around each sighting plus the peak JPEG, indexed in SQLite for a local server).
 
 ## Install
 
@@ -60,6 +61,21 @@ Credentials and webhook URLs are configured in `.env`: `DETSTREAM_SUPABASE_URL`,
 
 The `dataset` sink writes the raw peak frame of each sighting to `{dir}/{feed_id}/` as JPEG,
 no box drawn, for building a training set. It needs no extra: `dataset: { dir: ./frames, quality: 95 }`.
+
+The `clips` sink records a short MP4 around each sighting, the peak JPEG, and a row in
+`{dir}/index.db` (SQLite) that a local server can read. It keeps a rolling buffer of the
+seconds before the trigger, so the clip covers the approach, not just the aftermath. Detection
+runs on a subsample, so set `debounce.tee_fps` to the clip framerate to feed the buffer at
+video rate, otherwise clips are choppy. It needs no extra:
+
+```yaml
+debounce: { sample_interval_s: 1, cooldown_s: 300, tee_fps: 30 }
+sinks:
+  clips: { dir: ./data/clips, fps: 30, pre_s: 5, post_s: 5, width: 1280 }
+```
+
+`cooldown_s` is per detected class, so a deer cooling down does not block a fox in the same
+window.
 
 The `roboflow` detector runs a Workflow you built on Roboflow through its hosted inference API.
 Install the extra (`pip install "detstream[roboflow]"`), then give it your workspace and
@@ -143,7 +159,7 @@ detstream/
   events.py       SightingStarted / SightingEnded
   sources/        youtube, stream, file_device (+ shared reconnect base)
   detectors/      yolo_world, roboflow, rf_detr
-  sinks/          console, supabase, discord, dataset
+  sinks/          console, supabase, discord, dataset, clips
 examples/         otters.yaml, eagles.yaml
 tests/            config, registry, sources, state, sinks, detectors
 ```

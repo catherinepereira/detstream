@@ -25,6 +25,7 @@ sinks: Registry[Sink] = Registry("detstream.sinks")
 from . import console  # noqa: E402,F401
 from . import dataset  # noqa: E402,F401
 from . import comment  # noqa: E402,F401
+from . import clips  # noqa: E402,F401
 
 try:
     from . import supabase  # noqa: F401
