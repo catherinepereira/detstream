@@ -137,16 +137,40 @@ def test_started_label_is_the_entry_class():
     assert started.label == "deer"
 
 
-def test_ended_label_is_the_peak_class():
-    s = make_tracker(enter_frames=1, exit_frames=1)
-    # Entry class is "deer", but the peak-confidence frame is a "fox"; the ended event
-    # reports the peak's class, mirroring peak_frame/peak_box
-    s.update(True, 0.5, FRAME, 0, None, "deer")
+def test_ended_label_is_the_peak_within_a_class():
+    s = make_tracker(enter_frames=1, exit_frames=2)
+    # Two frames of the same class at different confidence; the ended event reports the
+    # peak-confidence frame of that class, mirroring peak_frame/peak_box
+    s.update(True, 0.5, FRAME, 0, None, "fox")
     s.update(True, 0.95, FRAME, 1, None, "fox")
-    s.update(True, 0.8, FRAME, 2, None, "raccoon")
+    s.update(False, 0.1, FRAME, 2, None, None)
     ended = s.update(False, 0.1, FRAME, 3, None, None)
     assert isinstance(ended, SightingEnded)
     assert ended.label == "fox"
+    assert ended.peak_confidence == 0.95
+
+
+def test_each_class_is_its_own_sighting():
+    # deer and fox seen in alternating frames each open their own sighting and end on their
+    # own timeout, rather than folding into one shared sighting
+    s = make_tracker(enter_frames=1, exit_frames=1)
+    started_deer = s.update(True, 0.8, FRAME, 0, None, "deer")
+    assert isinstance(started_deer, SightingStarted)
+    assert started_deer.label == "deer"
+    started_fox = s.update(True, 0.9, FRAME, 1, None, "fox")
+    assert isinstance(started_fox, SightingStarted)
+    assert started_fox.label == "fox"
+
+
+def test_cooldown_is_per_class():
+    # A deer sighting cooling down must not block a fox sighting in the same window
+    s = make_tracker(enter_frames=1, exit_frames=1, cooldown_s=300.0)
+    assert isinstance(s.update(True, 0.9, FRAME, 0, None, "deer"), SightingStarted)
+    s.update(False, 0.1, FRAME, 1, None, None)  # deer exits, now cooling down
+    # Same class inside the window is suppressed
+    assert s.update(True, 0.9, FRAME, 30, None, "deer") is None
+    # A different class still fires
+    assert isinstance(s.update(True, 0.9, FRAME, 31, None, "fox"), SightingStarted)
 
 
 def test_label_resets_between_sightings():

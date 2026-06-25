@@ -4,9 +4,25 @@ import numpy as np
 from .events import SightingEnded, SightingStarted
 
 
-# State tracking and cooldown over a stream of per-frame detections per feed
-# Fires SightingStarted when a sighting begins, tracks peak confidence for the
-# duration of the sighting, and doesn't fire again until the cooldown has elapsed
+# Per-class sighting state: the enter/exit counters, peak frame, and cooldown for one label.
+# The tracker holds one of these per class so two animals on screen at once each get their
+# own sighting and their own cooldown
+@dataclass
+class _ClassState:
+    present: bool = False
+    over: int = 0
+    under: int = 0
+    peak: float = 0.0
+    peak_frame: np.ndarray | None = None
+    peak_box: tuple[float, float, float, float] | None = None
+    peak_label: str | None = None
+    last_alert_at: float | None = None
+
+
+# State tracking and cooldown over a stream of per-frame detections per feed. Each class is
+# tracked independently: a fresh sighting of one class can start while another class is still
+# on screen or cooling down. A single-class detector reports label None, which is just one
+# class to this tracker
 @dataclass
 class SightingTracker:
     feed_id: str
@@ -14,14 +30,11 @@ class SightingTracker:
     exit_frames: int
     cooldown_s: float
 
-    present: bool = False
-    _over: int = 0
-    _under: int = 0
-    _peak: float = 0.0
-    _peak_frame: np.ndarray | None = None
-    _peak_box: tuple[float, float, float, float] | None = None
-    _peak_label: str | None = None
-    _last_alert_at: float | None = field(default=None)
+    _classes: dict[str | None, _ClassState] = field(default_factory=dict)
+
+    @property
+    def present(self) -> bool:
+        return any(st.present for st in self._classes.values())
 
     def update(
         self,
@@ -32,44 +45,71 @@ class SightingTracker:
         box: tuple[float, float, float, float] | None = None,
         label: str | None = None,
     ) -> SightingStarted | SightingEnded | None:
-        if detected:
-            self._over += 1
-            self._under = 0
-        else:
-            self._under += 1
-            self._over = 0
+        # A frame detects at most one class. That class sees a hit; every other class with an
+        # open or pending sighting sees a miss this frame, so an animal leaving frame still
+        # times out. The detected class is advanced last so its event is the one returned
+        event: SightingEnded | None = None
+        for other, st in list(self._classes.items()):
+            if not (detected and other == label):
+                ended = self._advance(st, False, 0.0, frame, now, None, other)
+                event = event or ended
+                if not st.present and st.over == 0 and st.last_alert_at is None:
+                    del self._classes[other]
 
-        if self.present:
+        if detected:
+            st = self._classes.setdefault(label, _ClassState())
+            return self._advance(st, True, confidence, frame, now, box, label) or event
+
+        return event
+
+    def _advance(
+        self,
+        st: _ClassState,
+        detected: bool,
+        confidence: float,
+        frame: np.ndarray,
+        now: float,
+        box: tuple[float, float, float, float] | None,
+        label: str | None,
+    ) -> SightingStarted | SightingEnded | None:
+        if detected:
+            st.over += 1
+            st.under = 0
+        else:
+            st.under += 1
+            st.over = 0
+
+        if st.present:
             # Keep the frame, box, and label from the highest-confidence moment for the thumbnail
-            if confidence > self._peak:
-                self._peak = confidence
-                self._peak_frame = frame
-                self._peak_box = box
-                self._peak_label = label
-            if self._under >= self.exit_frames:
-                self.present = False
+            if confidence > st.peak:
+                st.peak = confidence
+                st.peak_frame = frame
+                st.peak_box = box
+                st.peak_label = label
+            if st.under >= self.exit_frames:
+                st.present = False
                 ended = SightingEnded(
-                    self.feed_id, self._peak, self._peak_frame, self._peak_box, self._peak_label
+                    self.feed_id, st.peak, st.peak_frame, st.peak_box, st.peak_label
                 )
-                self._peak = 0.0
-                self._peak_frame = None
-                self._peak_box = None
-                self._peak_label = None
+                st.peak = 0.0
+                st.peak_frame = None
+                st.peak_box = None
+                st.peak_label = None
                 return ended
             return None
 
-        if self._over >= self.enter_frames and not self._in_cooldown(now):
-            self.present = True
-            self._last_alert_at = now
-            self._peak = confidence
-            self._peak_frame = frame
-            self._peak_box = box
-            self._peak_label = label
+        if st.over >= self.enter_frames and not self._in_cooldown(st, now):
+            st.present = True
+            st.last_alert_at = now
+            st.peak = confidence
+            st.peak_frame = frame
+            st.peak_box = box
+            st.peak_label = label
             return SightingStarted(self.feed_id, confidence, label)
 
         return None
 
-    def _in_cooldown(self, now: float) -> bool:
-        if self._last_alert_at is None:
+    def _in_cooldown(self, st: _ClassState, now: float) -> bool:
+        if st.last_alert_at is None:
             return False
-        return (now - self._last_alert_at) < self.cooldown_s
+        return (now - st.last_alert_at) < self.cooldown_s

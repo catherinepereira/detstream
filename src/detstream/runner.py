@@ -33,6 +33,18 @@ async def _dispatch(sinks: list[Sink], call) -> None:
             log.warning("sink %s failed: %s", type(sink).__name__, result)
 
 
+# Tee one captured frame to every frame sink. Runs on the per-frame hot path, so a sink
+# raising here is logged rather than allowed to kill the feed. on_frame is expected to be
+# cheap (append to a buffer); a sink that blocks here throttles capture for the whole feed
+async def _tee(frame_sinks: list[Sink], feed_id: str, ts: float, frame) -> None:
+    results = await asyncio.gather(
+        *(s.on_frame(feed_id, ts, frame) for s in frame_sinks), return_exceptions=True
+    )
+    for sink, result in zip(frame_sinks, results):
+        if isinstance(result, Exception):
+            log.warning("frame sink %s failed: %s", type(sink).__name__, result)
+
+
 async def watch_feed(feed: FeedConfig, detector: Detector, sinks: list[Sink]) -> None:
     tracker = SightingTracker(
         feed_id=feed.id,
@@ -41,11 +53,36 @@ async def watch_feed(feed: FeedConfig, detector: Detector, sinks: list[Sink]) ->
         cooldown_s=feed.debounce.cooldown_s,
     )
     loop = asyncio.get_running_loop()
+
+    # When a clip sink wants every frame, read at the faster tee rate and run detection only
+    # every detect_every-th frame so the detector keeps its sample_interval_s cadence. With
+    # no frame sink, read at the detection cadence as before
+    frame_sinks = [s for s in sinks if hasattr(s, "on_frame")]
+    sample_s = feed.debounce.sample_interval_s
+    if frame_sinks and feed.debounce.tee_fps > 0:
+        interval_s = 1.0 / feed.debounce.tee_fps
+        detect_every = max(1, round(sample_s * feed.debounce.tee_fps))
+    else:
+        if frame_sinks:
+            log.warning(
+                "feed %s has a frame sink but tee_fps is 0; clips get only the detection "
+                "subsample and will be choppy. Set debounce.tee_fps to the clip fps",
+                feed.id,
+            )
+        interval_s = sample_s
+        detect_every = 1
+
     source = source_registry.create(
         feed.source.type,
-        {**feed.source.options(), "interval_s": feed.debounce.sample_interval_s},
+        {**feed.source.options(), "interval_s": interval_s},
     )
-    async for _ts, frame in source.frames():
+    i = 0
+    async for ts, frame in source.frames():
+        if frame_sinks:
+            await _tee(frame_sinks, feed.id, ts, frame)
+        i += 1
+        if i % detect_every != 0:
+            continue
         det = await asyncio.to_thread(detector.detect, frame)
         # The tracker keeps the raw frame plus the box, so a sink can annotate at use time
         # while the dataset sink gets clean pixels

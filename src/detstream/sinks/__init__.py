@@ -9,6 +9,14 @@ class Sink(Protocol):
     async def on_sighting_end(self, event: SightingEnded) -> None: ...
 
 
+# A sink that wants the full frame stream (not just sighting events) implements on_frame.
+# The runner tees every captured frame to these so a sink can keep a rolling buffer for
+# clip recording. Detection still runs on a subsample, so on_frame is the only place a sink
+# sees frames between the peak of one sighting and the next
+class FrameSink(Protocol):
+    async def on_frame(self, feed_id: str, ts: float, frame) -> None: ...
+
+
 sinks: Registry[Sink] = Registry("detstream.sinks")
 
 # console, dataset, and comment have no optional deps (comment posts with httpx, a core

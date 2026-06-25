@@ -23,6 +23,11 @@ class DebounceConfig(BaseModel):
     enter_frames: int = 3
     exit_frames: int = 5
     cooldown_s: float = 120.0
+    # Frames per second the runner pulls from the source when a clip-recording sink is
+    # attached. Detection still runs every sample_interval_s; the extra frames only feed
+    # on_frame so a clip looks like video. 0 keeps the old behavior of reading at the
+    # detection cadence
+    tee_fps: float = 0.0
 
 
 class FeedConfig(BaseModel):
