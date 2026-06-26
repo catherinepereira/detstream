@@ -53,7 +53,7 @@ def test_clip_holds_pre_and_post_frames(tmp_path):
 
 
 def test_short_pre_roll_records_what_exists(tmp_path):
-    # A sighting right after startup has fewer than pre_frames buffered; record anyway
+    # A sighting right after startup has fewer than pre_frames buffered, record anyway
     sink = make_sink(tmp_path)
 
     async def run():
@@ -157,6 +157,54 @@ def test_no_index_row_when_clip_write_fails(tmp_path, monkeypatch):
 
     asyncio.run(run())
 
+    assert index_rows(tmp_path) == []
+
+
+def test_concurrent_classes_each_get_their_own_clip(tmp_path):
+    # Two animals on screen at once: the per-class tracker fires a start for each, and each
+    # must produce its own clip rather than clobbering the other (keyed by feed_id + label)
+    sink = make_sink(tmp_path)
+
+    async def run():
+        await feed(sink, "forest", 5)
+        await sink.on_sighting_start(SightingStarted("forest", 0.8, "fox"), "Forest")
+        await feed(sink, "forest", 2, start_val=50)
+        await sink.on_sighting_start(SightingStarted("forest", 0.7, "deer"), "Forest")
+        await feed(sink, "forest", 5, start_val=100)
+        await sink.on_sighting_end(SightingEnded("forest", 0.9, frame(60), None, "fox"))
+        await sink.on_sighting_end(SightingEnded("forest", 0.85, frame(70), None, "deer"))
+
+    asyncio.run(run())
+
+    rows = index_rows(tmp_path)
+    labels = sorted(r[5] for r in rows)
+    assert labels == ["deer", "fox"]  # both clips written, neither lost
+    assert len(list((tmp_path / "forest").glob("*.mp4"))) == 2
+
+
+def test_fps_must_be_positive(tmp_path):
+    import pytest
+
+    with pytest.raises(ValueError):
+        make_sink(tmp_path, fps=0)
+    with pytest.raises(ValueError):
+        make_sink(tmp_path, fps=-5)
+
+
+def test_feed_id_cannot_escape_clips_dir(tmp_path):
+    # A config feed_id with traversal must not write outside the clips dir
+    sink = make_sink(tmp_path)
+
+    async def run():
+        await feed(sink, "../escape", 3)
+        await sink.on_sighting_start(SightingStarted("../escape", 0.8), "Escape")
+        await feed(sink, "../escape", 3, start_val=100)
+        await sink.on_sighting_end(SightingEnded("../escape", 0.9, frame(1)))
+
+    asyncio.run(run())
+
+    # Nothing written above the clips dir, and no index row for the escaping feed
+    assert not list(tmp_path.parent.glob("escape/*.mp4"))
     assert index_rows(tmp_path) == []
 
 

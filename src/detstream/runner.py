@@ -33,16 +33,27 @@ async def _dispatch(sinks: list[Sink], call) -> None:
             log.warning("sink %s failed: %s", type(sink).__name__, result)
 
 
+# Frame-sink failures are counted per sink type so a sink that throws on every frame logs on a
+# backoff instead of spamming at the tee rate
+_tee_failures: dict[str, int] = {}
+
+
 # Tee one captured frame to every frame sink. Runs on the per-frame hot path, so a sink
 # raising here is logged rather than allowed to kill the feed. on_frame is expected to be
-# cheap (append to a buffer); a sink that blocks here throttles capture for the whole feed
+# cheap (append to a buffer), a sink that blocks here throttles capture for the whole feed
 async def _tee(frame_sinks: list[Sink], feed_id: str, ts: float, frame) -> None:
     results = await asyncio.gather(
         *(s.on_frame(feed_id, ts, frame) for s in frame_sinks), return_exceptions=True
     )
     for sink, result in zip(frame_sinks, results):
         if isinstance(result, Exception):
-            log.warning("frame sink %s failed: %s", type(sink).__name__, result)
+            name = type(sink).__name__
+            n = _tee_failures.get(name, 0) + 1
+            _tee_failures[name] = n
+            # log the first failure, then every 100th, so a persistently broken sink at 30fps
+            # does not fill the log
+            if n == 1 or n % 100 == 0:
+                log.warning("frame sink %s failed (%d times): %s", name, n, result)
 
 
 async def watch_feed(feed: FeedConfig, detector: Detector, sinks: list[Sink]) -> None:
@@ -65,7 +76,7 @@ async def watch_feed(feed: FeedConfig, detector: Detector, sinks: list[Sink]) ->
     else:
         if frame_sinks:
             log.warning(
-                "feed %s has a frame sink but tee_fps is 0; clips get only the detection "
+                "feed %s has a frame sink but tee_fps is 0, clips get only the detection "
                 "subsample and will be choppy. Set debounce.tee_fps to the clip fps",
                 feed.id,
             )

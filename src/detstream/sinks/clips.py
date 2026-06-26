@@ -31,13 +31,20 @@ class ClipSink:
         # in memory per feed. 0 keeps frames at source resolution
         self.width = int(config.get("width", 1280))
 
+        # fps <= 0 opens an invalid VideoWriter that drops clips or writes a corrupt file, and a
+        # negative window is meaningless. Fail at construction rather than silently per sighting
+        if self.fps <= 0:
+            raise ValueError(f"clips sink fps must be > 0, got {self.fps}")
+        if self.pre_s < 0 or self.post_s < 0:
+            raise ValueError("clips sink pre_s and post_s must be >= 0")
+
         self._pre_frames = max(1, round(self.pre_s * self.fps))
         self._post_frames = max(1, round(self.post_s * self.fps))
-        # Per feed: a rolling pre-roll deque, plus the post-roll frames being collected while a
-        # sighting is open. recording[feed_id] is None when no sighting is in progress
+        # Pre-roll deque is per feed. Recording state is per (feed_id, label) so two classes on
+        # one feed each get their own clip
         self._buffers: dict[str, deque] = {}
-        self._recording: dict[str, dict] = {}
-        self._started_at: dict[str, str] = {}
+        self._recording: dict[tuple[str, str | None], dict] = {}
+        self._started_at: dict[tuple[str, str | None], str] = {}
 
         self.dir.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(self.dir / "index.db", check_same_thread=False)
@@ -69,29 +76,39 @@ class ClipSink:
         if buf is None:
             buf = self._buffers[feed_id] = deque(maxlen=self._pre_frames)
         buf.append(frame)
-        rec = self._recording.get(feed_id)
-        if rec is not None and rec["post_left"] > 0:
-            rec["frames"].append(frame)
-            rec["post_left"] -= 1
+        # Extend every class currently recording on this feed. Two animals on screen at once
+        # each have their own open recording but share the incoming frames
+        for (rec_feed, _label), rec in self._recording.items():
+            if rec_feed == feed_id and rec["post_left"] > 0:
+                rec["frames"].append(frame)
+                rec["post_left"] -= 1
 
     async def on_sighting_start(self, event: SightingStarted, feed_name: str) -> None:
-        # Seed the clip with the pre-roll already buffered, then collect post_frames more as
+        # Key recording by (feed_id, label) so concurrent sightings of different classes on one
+        # feed each get their own clip. Seed with the pre-roll, then collect post_frames more as
         # on_frame fires until the post-roll is full or the sighting ends, whichever comes first
+        key = (event.feed_id, event.label)
         buf = self._buffers.get(event.feed_id)
-        self._recording[event.feed_id] = {
+        self._recording[key] = {
             "frames": list(buf) if buf else [],
             "post_left": self._post_frames,
         }
-        self._started_at[event.feed_id] = datetime.now(timezone.utc).isoformat()
+        self._started_at[key] = datetime.now(timezone.utc).isoformat()
 
     async def on_sighting_end(self, event: SightingEnded) -> None:
-        rec = self._recording.pop(event.feed_id, None)
-        started_at = self._started_at.pop(event.feed_id, None)
+        key = (event.feed_id, event.label)
+        rec = self._recording.pop(key, None)
+        started_at = self._started_at.pop(key, None)
         frames = rec["frames"] if rec else None
         if not frames:
             return
         sighting_id = uuid.uuid4().hex
-        out_dir = self.dir / event.feed_id
+        out_dir = (self.dir / event.feed_id).resolve()
+        # feed_id comes from config, but a stray "../" or absolute path would write outside the
+        # clips dir and let a reader serve files from anywhere. Keep every clip under self.dir
+        if not out_dir.is_relative_to(self.dir.resolve()):
+            log.warning("clip sink: feed_id %r escapes the clips dir, skipping", event.feed_id)
+            return
         clip_path = out_dir / f"{sighting_id}.mp4"
         thumb_path = out_dir / f"{sighting_id}.jpg" if event.peak_frame is not None else None
         # The index must only name files that landed on disk, or the server serves a 404. So
@@ -151,14 +168,15 @@ class ClipSink:
         )
         self._db.commit()
 
-    # Downscale to the width cap, keeping aspect. Frames are copied so the deque does not
-    # pin OpenCV's reused capture buffer
+    # Downscale to the width cap, keeping aspect. cap.read() hands out a fresh array per frame
+    # and the tee awaits this before the next read, so the frame is already private to the
+    # deque, no copy needed. resize already returns a new array
     def _fit(self, frame: np.ndarray) -> np.ndarray:
         h, w = frame.shape[:2]
         if self.width and w > self.width:
             new_h = round(h * self.width / w)
             return cv2.resize(frame, (self.width, new_h), interpolation=cv2.INTER_AREA)
-        return frame.copy()
+        return frame
 
 
 @sinks.register("clips")
