@@ -1,7 +1,9 @@
 from __future__ import annotations
 import asyncio
 import logging
+import shutil
 import sqlite3
+import subprocess
 import uuid
 from collections import deque
 from datetime import datetime, timezone
@@ -12,6 +14,8 @@ from ..events import SightingEnded, SightingStarted
 from . import sinks
 
 log = logging.getLogger(__name__)
+
+_FFMPEG = shutil.which("ffmpeg")
 
 
 # Records a short MP4 around each sighting plus the peak JPEG, and indexes both in a SQLite
@@ -125,21 +129,15 @@ class ClipSink:
     def _write(self, out_dir, frames, clip_path, thumb_path, peak_frame) -> tuple[bool, bool]:
         out_dir.mkdir(parents=True, exist_ok=True)
         h, w = frames[0].shape[:2]
-        fourcc = cv2.VideoWriter_fourcc(*self.codec)
-        writer = cv2.VideoWriter(str(clip_path), fourcc, self.fps, (w, h))
-        if not writer.isOpened():
-            log.warning("clip sink could not open writer for %s", clip_path)
+        # resize any mid-clip resolution change back to the opening size
+        sized = (f if f.shape[:2] == (h, w) else cv2.resize(f, (w, h)) for f in frames)
+        wrote_clip = (
+            self._write_ffmpeg(sized, clip_path, w, h)
+            if _FFMPEG
+            else self._write_cv2(sized, clip_path, w, h)
+        )
+        if not wrote_clip:
             return False, False
-        try:
-            for f in frames:
-                # A stream that changes resolution mid-clip yields odd-sized frames, which
-                # VideoWriter.write silently drops. Resize them to the opening size so the
-                # clip keeps every frame
-                if f.shape[:2] != (h, w):
-                    f = cv2.resize(f, (w, h), interpolation=cv2.INTER_AREA)
-                writer.write(f)
-        finally:
-            writer.release()
         wrote_thumb = False
         if thumb_path is not None:
             wrote_thumb = cv2.imwrite(
@@ -148,6 +146,41 @@ class ClipSink:
             if not wrote_thumb:
                 log.warning("clip sink failed to write thumbnail %s", thumb_path)
         return True, wrote_thumb
+
+    def _write_ffmpeg(self, frames, clip_path, w, h) -> bool:
+        # H.264 + yuv420p + faststart is what browsers play. cv2's mp4v is MPEG-4 Part 2, which
+        # Chrome will not decode, and it leaves the moov atom at the end so playback can't stream
+        cmd = [
+            _FFMPEG, "-y", "-loglevel", "error",
+            "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{w}x{h}", "-r", str(self.fps),
+            "-i", "-",
+            "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+            str(clip_path),
+        ]
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            for f in frames:
+                proc.stdin.write(np.ascontiguousarray(f).tobytes())
+        except BrokenPipeError:
+            pass
+        _, err = proc.communicate()
+        if proc.returncode != 0:
+            log.warning("clip sink ffmpeg failed for %s: %s", clip_path, err.decode(errors="replace"))
+            return False
+        return True
+
+    def _write_cv2(self, frames, clip_path, w, h) -> bool:
+        # fallback when ffmpeg is absent. Uses the configured fourcc, may not play in a browser
+        writer = cv2.VideoWriter(str(clip_path), cv2.VideoWriter_fourcc(*self.codec), self.fps, (w, h))
+        if not writer.isOpened():
+            log.warning("clip sink could not open writer for %s", clip_path)
+            return False
+        try:
+            for f in frames:
+                writer.write(f)
+        finally:
+            writer.release()
+        return True
 
     def _index(self, sighting_id, event: SightingEnded, started_at, clip_path, thumb_path) -> None:
         ended_at = datetime.now(timezone.utc).isoformat()

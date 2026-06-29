@@ -133,8 +133,8 @@ def test_width_cap_downscales_buffered_frames(tmp_path):
 
 
 def test_no_index_row_when_clip_write_fails(tmp_path, monkeypatch):
-    # If the codec cannot open a writer, the sink must not record a row pointing at a clip
-    # that was never written, or the server would serve a 404
+    # A clip that fails to encode must not get an index row pointing at a missing file, or the
+    # server would serve a 404. Force the cv2 fallback path and make its writer fail to open
     sink = make_sink(tmp_path)
 
     class DeadWriter:
@@ -147,6 +147,7 @@ def test_no_index_row_when_clip_write_fails(tmp_path, monkeypatch):
         def release(self):
             pass
 
+    monkeypatch.setattr("detstream.sinks.clips._FFMPEG", None)
     monkeypatch.setattr("detstream.sinks.clips.cv2.VideoWriter", lambda *a, **k: DeadWriter())
 
     async def run():
