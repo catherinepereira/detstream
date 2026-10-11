@@ -105,6 +105,19 @@ def test_no_boxes_returns_absent(fake_ultralytics):
     assert out.box is None
 
 
+
+def test_detect_batch_returns_one_detection_per_frame(fake_ultralytics):
+    hit = _Result(_Boxes([0.9], [[1, 2, 3, 4]]))
+    miss = _Result(None)
+    det = _build(fake_ultralytics, [hit, miss])
+
+    frame = np.zeros((4, 4, 3), dtype=np.uint8)
+    out = det.detect_batch([frame, frame])
+
+    assert [d.present for d in out] == [True, False]
+    assert out[0].box == pytest.approx((1.0, 2.0, 3.0, 4.0))
+    assert out[1].box is None
+
 # --- rf-detr detector ---
 
 

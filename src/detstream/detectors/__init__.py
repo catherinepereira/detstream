@@ -19,6 +19,12 @@ class Detector(Protocol):
     def detect(self, frame: np.ndarray) -> Detection: ...
 
 
+# Optional. A detector that can run several frames in one forward pass implements this, and
+# feeds sharing the detector get batched. Without it the frames run one at a time
+class BatchDetector(Protocol):
+    def detect_batch(self, frames: list[np.ndarray]) -> list[Detection]: ...
+
+
 detectors: Registry[Detector] = Registry("detstream.detectors")
 
 # Import built-ins so they self-register

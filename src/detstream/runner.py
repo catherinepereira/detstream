@@ -1,9 +1,11 @@
 from __future__ import annotations
 import asyncio
+import json
 import logging
 import os
+from .batcher import DetectorBatcher
 from .config import AppConfig, FeedConfig
-from .detectors import Detector, detectors
+from .detectors import detectors
 from .events import SightingStarted
 from .sinks import Sink, sinks as sink_registry
 from .sources import sources as source_registry
@@ -22,6 +24,9 @@ def build_sinks(feed: FeedConfig, app: AppConfig) -> list[Sink]:
 
 # Restart backoff for a feed whose watch loop crashed
 FEED_RESTART_BACKOFF_S = (5.0, 15.0, 30.0, 60.0)
+
+# How often a feed that is producing frames tells on_heartbeat sinks it is alive
+HEARTBEAT_INTERVAL_S = 60.0
 
 
 async def _dispatch(sinks: list[Sink], call) -> None:
@@ -56,7 +61,7 @@ async def _tee(frame_sinks: list[Sink], feed_id: str, ts: float, frame) -> None:
                 log.warning("frame sink %s failed (%d times): %s", name, n, result)
 
 
-async def watch_feed(feed: FeedConfig, detector: Detector, sinks: list[Sink]) -> None:
+async def watch_feed(feed: FeedConfig, detector: DetectorBatcher, sinks: list[Sink]) -> None:
     tracker = SightingTracker(
         feed_id=feed.id,
         enter_frames=feed.debounce.enter_frames,
@@ -69,6 +74,8 @@ async def watch_feed(feed: FeedConfig, detector: Detector, sinks: list[Sink]) ->
     # every detect_every-th frame so the detector keeps its sample_interval_s cadence. With
     # no frame sink, read at the detection cadence as before
     frame_sinks = [s for s in sinks if hasattr(s, "on_frame")]
+    heartbeat_sinks = [s for s in sinks if hasattr(s, "on_heartbeat")]
+    last_heartbeat: float | None = None
     sample_s = feed.debounce.sample_interval_s
     if frame_sinks and feed.debounce.tee_fps > 0:
         interval_s = 1.0 / feed.debounce.tee_fps
@@ -94,10 +101,16 @@ async def watch_feed(feed: FeedConfig, detector: Detector, sinks: list[Sink]) ->
         i += 1
         if i % detect_every != 0:
             continue
-        det = await asyncio.to_thread(detector.detect, frame)
+        det = await detector.detect(frame)
+        now = loop.time()
+        if heartbeat_sinks and (
+            last_heartbeat is None or now - last_heartbeat >= HEARTBEAT_INTERVAL_S
+        ):
+            last_heartbeat = now
+            await _dispatch(heartbeat_sinks, lambda s: s.on_heartbeat(feed.id))
         # The tracker keeps the raw frame plus the box, so a sink can annotate at use time
         # while the dataset sink gets clean pixels
-        event = tracker.update(det.present, det.confidence, frame, loop.time(), det.box, det.label)
+        event = tracker.update(det.present, det.confidence, frame, now, det.box, det.label)
         if event is None:
             continue
         if isinstance(event, SightingStarted):
@@ -106,7 +119,7 @@ async def watch_feed(feed: FeedConfig, detector: Detector, sinks: list[Sink]) ->
             await _dispatch(sinks, lambda s: s.on_sighting_end(event))
 
 
-async def supervise_feed(feed: FeedConfig, detector: Detector, sinks: list[Sink]) -> None:
+async def supervise_feed(feed: FeedConfig, detector: DetectorBatcher, sinks: list[Sink]) -> None:
     attempt = 0
     while True:
         try:
@@ -145,8 +158,15 @@ async def run(app: AppConfig) -> None:
 
     tasks = []
     all_sinks: list[Sink] = []
+    # Feeds with identical detector config share one model
+    shared: dict[str, DetectorBatcher] = {}
     for feed in app.feeds:
-        detector = detectors.create(feed.detector.type, feed.detector.options())
+        key = json.dumps(feed.detector.model_dump(), sort_keys=True)
+        if key not in shared:
+            shared[key] = DetectorBatcher(
+                detectors.create(feed.detector.type, feed.detector.options())
+            )
+        detector = shared[key]
         sinks = build_sinks(feed, app)
         all_sinks.extend(sinks)
         log.info("watching %s with %d sink(s)", feed.id, len(sinks))

@@ -59,6 +59,20 @@ sinks:
 
 Credentials and webhook URLs are configured in `.env`: `DETSTREAM_SUPABASE_URL`, `DETSTREAM_SUPABASE_KEY`, and `DETSTREAM_DISCORD_WEBHOOK_URL`.
 
+Live sources (`youtube`, `stream`, a webcam) are decoded on a thread at the stream's own pace,
+and each sample is the newest frame, so detection stays at a fixed delay behind the live edge.
+A `file` is read in order, one frame per interval. The `youtube` source takes the video-only
+HLS track at or below `max_height` (default 720). Detectors resize to about 640 wide, so a
+lower `max_height` saves decoding without changing what the model sees.
+
+Feeds with identical detector config share one model. Frames from different feeds that arrive
+while it is busy run together as a batch.
+
+The `supabase` sink writes a `sightings` row per sighting and stamps `cams.last_frame_at` about
+once a minute while a feed is producing frames, so a website can tell a quiet cam from one
+that is not being watched. On a feed's first frame after a restart it closes any `sightings`
+rows a previous run left open.
+
 The `dataset` sink writes the raw peak frame of each sighting to `{dir}/{feed_id}/` as JPEG,
 no box drawn, for building a training set. It needs no extra: `dataset: { dir: ./frames, quality: 95 }`.
 
@@ -148,6 +162,9 @@ After `pip install`, reference it in config as `detector: { type: my-model, ... 
 discovers it through the entry point with no change to detstream itself. The same pattern works
 for `detstream.sources` and `detstream.sinks`.
 
+Optional hooks: a detector with `detect_batch(frames) -> list[Detection]` gets batched across
+feeds, and a sink with `async on_heartbeat(feed_id)` hears about once a minute that a feed is up.
+
 ## Layout
 
 ```
@@ -155,13 +172,14 @@ detstream/
   registry.py     register + create + entry-point discovery
   config.py       FeedConfig / AppConfig, loads YAML
   runner.py       per-feed asyncio loop
+  batcher.py      one detector shared across feeds, batched
   state.py        SightingTracker: hysteresis + cooldown, no I/O
   events.py       SightingStarted / SightingEnded
   sources/        youtube, stream, file_device (+ shared reconnect base)
-  detectors/      yolo_world, roboflow, rf_detr
+  detectors/      yolo_world, yoloe, roboflow, rf_detr
   sinks/          console, supabase, discord, dataset, clips
 examples/         otters.yaml, eagles.yaml
-tests/            config, registry, sources, state, sinks, detectors
+tests/            config, registry, sources, state, sinks, detectors, batcher, runner
 ```
 
 ## License

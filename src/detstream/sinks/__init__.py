@@ -17,6 +17,12 @@ class FrameSink(Protocol):
     async def on_frame(self, feed_id: str, ts: float, frame) -> None: ...
 
 
+# A sink that wants to know a feed is up implements on_heartbeat. The runner calls it about
+# once a minute while the feed is producing frames, and stops when the stream is down
+class HeartbeatSink(Protocol):
+    async def on_heartbeat(self, feed_id: str) -> None: ...
+
+
 sinks: Registry[Sink] = Registry("detstream.sinks")
 
 # console, dataset, and comment have no optional deps (comment posts with httpx, a core

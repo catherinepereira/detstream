@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import logging
 import os
 import uuid
@@ -13,7 +14,8 @@ log = logging.getLogger(__name__)
 
 # Writes a sightings row on start and patches ended_at on end. The peak confidence frame is
 # downscaled, uploaded to Supabase Storage, and its URL is stored on the row. The website
-# subscribes to the table via Realtime
+# subscribes to the table via Realtime. Heartbeats stamp cams.last_frame_at so the website
+# can tell a quiet cam from one the worker is not watching
 class SupabaseSink:
     def __init__(self, config: dict):
         from supabase import create_client
@@ -31,6 +33,7 @@ class SupabaseSink:
         self.thumbnail_quality = int(config.get("thumbnail_quality", 70))
         self.retention_hours = float(config.get("retention_hours", 3))
         self._open_rows: dict[str, str] = {}  # feed_id -> sighting row id
+        self._beating: set[str] = set()
 
     async def on_sighting_start(self, event: SightingStarted, feed_name: str) -> None:
         # No thumbnail yet, it is uploaded on end from the peak-confidence frame
@@ -62,6 +65,21 @@ class SupabaseSink:
                 "thumbnail": thumb_url,
             }
         ).eq("id", row_id).execute()
+
+    async def on_heartbeat(self, feed_id: str) -> None:
+        await asyncio.to_thread(self._heartbeat, feed_id)
+
+    def _heartbeat(self, feed_id: str) -> None:
+        # On the first beat after a (re)start, close rows a previous process left open.
+        # Their end was never seen
+        if feed_id not in self._beating:
+            self.client.table("sightings").update({"ended_at": "now()"}).eq(
+                "cam_id", feed_id
+            ).is_("ended_at", "null").execute()
+            self._beating.add(feed_id)
+        self.client.table("cams").update({"last_frame_at": "now()"}).eq(
+            "id", feed_id
+        ).execute()
 
     def _upload_thumbnail(self, feed_id: str, frame, confidence, box) -> str | None:
         if frame is None:

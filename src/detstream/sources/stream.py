@@ -14,7 +14,10 @@ class StreamSource:
 
     def frames(self) -> AsyncIterator[tuple[float, np.ndarray]]:
         return capture_frames(
-            lambda: cv2.VideoCapture(self.url), self.interval_s, label=f"stream {self.url}"
+            lambda: cv2.VideoCapture(self.url),
+            self.interval_s,
+            label=f"stream {self.url}",
+            live=True,
         )
 
 

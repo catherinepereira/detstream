@@ -25,7 +25,14 @@ class YoloeDetector:
         self.model.set_classes(self.prompts, self.model.get_text_pe(self.prompts))
 
     def detect(self, frame: np.ndarray) -> Detection:
-        results = self.model.predict(frame, conf=0.01, verbose=False)
+        return self._best(self.model.predict(frame, conf=0.01, verbose=False))
+
+    # ultralytics returns one result per input frame
+    def detect_batch(self, frames: list[np.ndarray]) -> list[Detection]:
+        results = self.model.predict(frames, conf=0.01, verbose=False)
+        return [self._best([r]) for r in results]
+
+    def _best(self, results) -> Detection:
         best = 0.0
         box = None
         label = None

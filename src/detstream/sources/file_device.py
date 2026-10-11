@@ -22,6 +22,7 @@ class FileDeviceSource:
             self.interval_s,
             label=f"file {self.path}",
             reconnect=reconnect,
+            live=is_device,
         )
 
 

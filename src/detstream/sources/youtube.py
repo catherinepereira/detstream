@@ -13,13 +13,15 @@ from . import capture_frames, sources
 os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "allowed_segment_extensions;ALL")
 
 
-def resolve_stream(youtube_url: str) -> str:
+def resolve_stream(youtube_url: str, max_height: int = 720) -> str:
     import yt_dlp
 
-    # remote_components lets yt-dlp fetch and run its JS challenge solver
+    # remote_components lets yt-dlp fetch and run its JS challenge solver.
+    # Live streams come as separate video and audio HLS tracks with no muxed format, so pick
+    # video only. Detectors resize to ~640, so decoding above max_height is wasted work
     opts = {
         "quiet": True,
-        "format": "best[protocol^=m3u8]/best",
+        "format": f"bv*[protocol^=m3u8][height<={max_height}]/bv*[protocol^=m3u8]/b",
         "noplaylist": True,
         "remote_components": ["ejs:github"],
     }
@@ -31,18 +33,25 @@ def resolve_stream(youtube_url: str) -> str:
 # A YouTube live stream. yt-dlp resolves the page to an HLS manifest, which OpenCV reads
 # The manifest URL expires, so each reconnect re-resolves rather than reusing the old one
 class YouTubeSource:
-    def __init__(self, url: str, interval_s: float):
+    def __init__(self, url: str, interval_s: float, max_height: int = 720):
         self.url = url
         self.interval_s = interval_s
+        self.max_height = max_height
 
     def frames(self) -> AsyncIterator[tuple[float, np.ndarray]]:
         def open_capture() -> cv2.VideoCapture:
-            hls = resolve_stream(self.url)
+            hls = resolve_stream(self.url, self.max_height)
             return cv2.VideoCapture(hls)
 
-        return capture_frames(open_capture, self.interval_s, label=f"youtube {self.url}")
+        return capture_frames(
+            open_capture, self.interval_s, label=f"youtube {self.url}", live=True
+        )
 
 
 @sources.register("youtube")
 def _build(config: dict) -> YouTubeSource:
-    return YouTubeSource(url=config["url"], interval_s=config.get("interval_s", 2.0))
+    return YouTubeSource(
+        url=config["url"],
+        interval_s=config.get("interval_s", 2.0),
+        max_height=config.get("max_height", 720),
+    )

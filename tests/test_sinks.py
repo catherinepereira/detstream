@@ -206,6 +206,55 @@ def test_supabase_thumbnail_unboxed_when_no_box(fake_supabase, monkeypatch):
     assert np.array_equal(captured["frame"], raw)
 
 
+class _RecordingQuery:
+    def __init__(self, log, table):
+        self.log = log
+        self.table = table
+        self.ops = []
+
+    def update(self, data):
+        self.ops.append(("update", data))
+        return self
+
+    def eq(self, column, value):
+        self.ops.append(("eq", column, value))
+        return self
+
+    def is_(self, column, value):
+        self.ops.append(("is", column, value))
+        return self
+
+    def execute(self):
+        self.log.append((self.table, self.ops))
+        return self
+
+
+class _RecordingClient:
+    def __init__(self):
+        self.log = []
+
+    def table(self, name):
+        return _RecordingQuery(self.log, name)
+
+
+def test_supabase_heartbeat_closes_stale_rows_once_then_stamps_cam(fake_supabase, monkeypatch):
+    import asyncio
+
+    monkeypatch.setenv("DETSTREAM_SUPABASE_URL", "https://proj.supabase.co")
+    monkeypatch.setenv("DETSTREAM_SUPABASE_KEY", "secret")
+    from detstream.sinks.supabase import SupabaseSink
+
+    sink = SupabaseSink({})
+    sink.client = _RecordingClient()
+
+    asyncio.run(sink.on_heartbeat("f1"))
+    asyncio.run(sink.on_heartbeat("f1"))
+
+    close_stale = [("update", {"ended_at": "now()"}), ("eq", "cam_id", "f1"), ("is", "ended_at", "null")]
+    stamp = [("update", {"last_frame_at": "now()"}), ("eq", "id", "f1")]
+    assert sink.client.log == [("sightings", close_stale), ("cams", stamp), ("cams", stamp)]
+
+
 class _FakeCommentClient:
     posted = {}
 
